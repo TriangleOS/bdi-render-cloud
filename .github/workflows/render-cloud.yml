@@ -1,0 +1,94 @@
+# Free cloud render machines for the BDI production line (target 300 videos a day).
+#   1. kaggle    – starts a private Kaggle CPU notebook twice a day (each runs ~11 hours).
+#   2. hf-space  – deploys the always-on Hugging Face Space render machine (on change, or by hand).
+#   3. fallback  – renders here on GitHub only when the others are behind (scripts piling up).
+# Budget: this repo is public, so GitHub Actions minutes are free and unlimited.
+# the fallback runs at most twice a day for 25 minutes (~1,560 min/month). With the default $0 spending limit,
+# GitHub stops jobs instead of charging.
+#
+# Repository secrets needed (Settings → Secrets and variables → Actions):
+#   BDI_MACHINE_TOKEN   portal → Playbooks → n8n connection → machine token
+#   KAGGLE_API_TOKEN    kaggle.com → Settings → API → access token (KGAT_...); or the legacy KAGGLE_USERNAME + KAGGLE_KEY
+#   HF_TOKEN            huggingface.co → Settings → Access Tokens → a "Write" token
+name: render-cloud
+on:
+  schedule:
+    - cron: "5 6,18 * * *"     # Kaggle starts + fallback check
+  push:
+    branches: [main]
+    paths: ["hf-space/**", ".github/workflows/render-cloud.yml"]
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "kaggle, hf-space, fallback or all"
+        default: all
+concurrency:
+  group: render-cloud-${{ github.event_name }}
+  cancel-in-progress: false
+jobs:
+  kaggle:
+    if: github.event_name == 'schedule' || inputs.only == 'kaggle' || inputs.only == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push and run the Kaggle notebook
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME || 'triangleos' }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          TOKEN: ${{ secrets.BDI_MACHINE_TOKEN }}
+        run: |
+          if { [ -z "$KAGGLE_KEY" ] && [ -z "$KAGGLE_API_TOKEN" ]; } || [ -z "$TOKEN" ]; then echo "Kaggle or machine token secret missing; skipping"; exit 0; fi
+          [ -z "$KAGGLE_KEY" ] && unset KAGGLE_KEY
+          pip install -q -U kaggle
+          if [ -z "$KAGGLE_USERNAME" ]; then KAGGLE_USERNAME=$(kaggle config view 2>/dev/null | awk -F': ' '/username/{print $2}' | tr -d ' '); fi
+          [ -z "$KAGGLE_USERNAME" ] && { echo "Add the KAGGLE_USERNAME secret (your Kaggle username)"; exit 1; }
+          mkdir -p k && sed "s|__BDI_MACHINE_TOKEN__|$TOKEN|" kaggle/bdi-render.py > k/bdi-render.py
+          cat > k/kernel-metadata.json <<EOF
+          {"id": "$KAGGLE_USERNAME/bdi-render", "title": "bdi-render", "code_file": "bdi-render.py", "language": "python",
+           "kernel_type": "script", "is_private": true, "enable_gpu": false, "enable_internet": true,
+           "dataset_sources": [], "competition_sources": [], "kernel_sources": []}
+          EOF
+          kaggle kernels push -p k
+  hf-space:
+    if: github.event_name == 'push' || inputs.only == 'hf-space' || inputs.only == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create or update the Space and its secret
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TOKEN: ${{ secrets.BDI_MACHINE_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$TOKEN" ]; then echo "HF_TOKEN or machine token secret missing; skipping"; exit 0; fi
+          pip install -q huggingface_hub
+          python - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          repo = api.whoami()["name"] + "/bdi-render"
+          api.create_repo(repo, repo_type="space", space_sdk="docker", private=False, exist_ok=True)
+          api.add_space_secret(repo, "BDI_MACHINE_TOKEN", os.environ["TOKEN"])
+          api.upload_folder(repo_id=repo, repo_type="space", folder_path="hf-space", commit_message="BDI render machine")
+          print("Space:", f"https://huggingface.co/spaces/{repo}", "| keep-awake URL:", f"https://{repo.replace('/', '-').lower()}.hf.space/")
+          EOF
+  fallback:
+    if: github.event_name == 'schedule' || inputs.only == 'fallback' || inputs.only == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 32
+    steps:
+      - name: Is the production line behind?
+        id: need
+        env: { TOKEN: "${{ secrets.BDI_MACHINE_TOKEN }}" }
+        run: |
+          [ -z "$TOKEN" ] && { echo "run=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          s=$(curl -fsS -H "authorization: Bearer $TOKEN" https://firstreceive.com/empire/api/machine/production || echo '{}')
+          echo "$s" | head -c 600; echo
+          run=$(echo "$s" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(str(d.get("gate",{}).get("open") is True and d.get("waiting",0) >= 40 or "${{ inputs.only }}"=="fallback").lower())')
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+      - name: Render for 25 minutes
+        if: steps.need.outputs.run == 'true'
+        env: { BDI_MACHINE_TOKEN: "${{ secrets.BDI_MACHINE_TOKEN }}", BDI_MACHINE_NAME: github, MAX_MINUTES: "25" }
+        run: curl -fsSL https://firstreceive.com/empire/dl/run.sh | bash
