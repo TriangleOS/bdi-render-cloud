@@ -1,5 +1,6 @@
 # Free cloud render machines for the BDI production line (target 300 videos a day).
-#   1. kaggle    – starts a private Kaggle CPU notebook twice a day (each runs ~11 hours).
+#   1. kaggle    – starts two private Kaggle CPU notebooks twice a day (~11 h each) and one GPU notebook once a day
+#                  (~4 h) that draws its own scene pictures (SDXL-Lightning), so volume is not tied to the AI allowance.
 #   2. hf-space  – OFF: Hugging Face now needs PRO (paid) to host Docker Spaces, so it is skipped unless run by hand.
 #   3. fallback  – renders here on GitHub only when the others are behind (scripts piling up).
 # Budget: this repo is public, so GitHub Actions minutes are free and unlimited.
@@ -45,9 +46,15 @@ jobs:
           if [ -z "$KAGGLE_USERNAME" ]; then KAGGLE_USERNAME=$(kaggle config view 2>/dev/null | awk -F': ' '/username/{print $2}' | tr -d ' '); fi
           [ -z "$KAGGLE_USERNAME" ] && { echo "Add the KAGGLE_USERNAME secret (your Kaggle username)"; exit 1; }
           # Two notebooks in parallel (Kaggle runs several CPU sessions at once); the second is skipped if the limit is hit.
-          for n in "" "-2"; do
-            rm -rf k && mkdir -p k && sed -e "s|__BDI_MACHINE_TOKEN__|$TOKEN|" -e "s|BDI_MACHINE_NAME=\"kaggle\"|BDI_MACHINE_NAME=\"kaggle$n\"|" kaggle/bdi-render.py > k/bdi-render.py
-            printf '{"id": "%s/bdi-render%s", "title": "bdi-render%s", "code_file": "bdi-render.py", "language": "python", "kernel_type": "script", "is_private": true, "enable_gpu": false, "enable_internet": true, "dataset_sources": [], "competition_sources": [], "kernel_sources": []}' "$KAGGLE_USERNAME" "$n" "$n" > k/kernel-metadata.json
+          # Plus one GPU notebook once a day (06:05 run or by hand) that draws its own scene pictures: ~4 h a day stays
+          # inside Kaggle's 30 free GPU hours a week; when they run out Kaggle refuses the push and nothing is charged.
+          list='"" "-2"'; { [ "$(date -u +%H)" = "06" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; } && list='"" "-2" "-gpu"'
+          eval "set -- $list"
+          for n in "$@"; do
+            gpu=false; g=0; mins=680; [ "$n" = "-gpu" ] && { gpu=true; g=1; mins=230; }
+            rm -rf k && mkdir -p k && sed -e "s|__BDI_MACHINE_TOKEN__|$TOKEN|" -e "s|BDI_MACHINE_NAME=\"kaggle\"|BDI_MACHINE_NAME=\"kaggle$n\"|" \
+              -e "s|BDI_GPU=\"0\"|BDI_GPU=\"$g\"|" -e "s|MAX_MINUTES=\"680\"|MAX_MINUTES=\"$mins\"|" kaggle/bdi-render.py > k/bdi-render.py
+            printf '{"id": "%s/bdi-render%s", "title": "bdi-render%s", "code_file": "bdi-render.py", "language": "python", "kernel_type": "script", "is_private": true, "enable_gpu": %s, "enable_internet": true, "dataset_sources": [], "competition_sources": [], "kernel_sources": []}' "$KAGGLE_USERNAME" "$n" "$n" "$gpu" > k/kernel-metadata.json
             kaggle kernels push -p k || true
           done
   hf-space:
