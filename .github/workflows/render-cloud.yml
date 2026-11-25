@@ -51,10 +51,10 @@ jobs:
           list='"" "-2"'; { [ "$(date -u +%H)" = "06" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; } && list='"" "-2" "-gpu"'
           eval "set -- $list"
           for n in "$@"; do
-            gpu=false; g=0; mins=680; [ "$n" = "-gpu" ] && { gpu=true; g=1; mins=230; }
+            gpu=false; g=0; mins=680; shape=""; [ "$n" = "-gpu" ] && { gpu=true; g=1; mins=230; shape=' "machine_shape": "NvidiaTeslaT4",'; }
             rm -rf k && mkdir -p k && sed -e "s|__BDI_MACHINE_TOKEN__|$TOKEN|" -e "s|BDI_MACHINE_NAME=\"kaggle\"|BDI_MACHINE_NAME=\"kaggle$n\"|" \
               -e "s|BDI_GPU=\"0\"|BDI_GPU=\"$g\"|" -e "s|MAX_MINUTES=\"680\"|MAX_MINUTES=\"$mins\"|" kaggle/bdi-render.py > k/bdi-render.py
-            printf '{"id": "%s/bdi-render%s", "title": "bdi-render%s", "code_file": "bdi-render.py", "language": "python", "kernel_type": "script", "is_private": true, "enable_gpu": %s, "enable_internet": true, "dataset_sources": [], "competition_sources": [], "kernel_sources": []}' "$KAGGLE_USERNAME" "$n" "$n" "$gpu" > k/kernel-metadata.json
+            printf '{"id": "%s/bdi-render%s", "title": "bdi-render%s", "code_file": "bdi-render.py", "language": "python", "kernel_type": "script", "is_private": true, "enable_gpu": %s,%s "enable_internet": true, "dataset_sources": [], "competition_sources": [], "kernel_sources": []}' "$KAGGLE_USERNAME" "$n" "$n" "$gpu" "$shape" > k/kernel-metadata.json
             kaggle kernels push -p k || true
           done
   hf-space:
