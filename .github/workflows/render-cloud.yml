@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "kaggle, hf-space, fallback or all"
+        description: "kaggle, hf-space, fallback, status or all"
         default: all
 concurrency:
   group: render-cloud-${{ github.event_name }}
@@ -56,6 +56,24 @@ jobs:
               -e "s|BDI_GPU=\"0\"|BDI_GPU=\"$g\"|" -e "s|MAX_MINUTES=\"680\"|MAX_MINUTES=\"$mins\"|" kaggle/bdi-render.py > k/bdi-render.py
             printf '{"id": "%s/bdi-render%s", "title": "bdi-render%s", "code_file": "bdi-render.py", "language": "python", "kernel_type": "script", "is_private": true, "enable_gpu": %s,%s "enable_internet": true, "dataset_sources": [], "competition_sources": [], "kernel_sources": []}' "$KAGGLE_USERNAME" "$n" "$n" "$gpu" "$shape" > k/kernel-metadata.json
             kaggle kernels push -p k || true
+          done
+  status:
+    # By hand only: status and the last lines of each Kaggle notebook's log (no secrets are printed).
+    if: inputs.only == 'status'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME || 'triangleos' }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          [ -z "$KAGGLE_KEY" ] && unset KAGGLE_KEY
+          pip install -q -U kaggle
+          for k in bdi-render bdi-render-2 bdi-render-gpu; do
+            echo "=== $k"; kaggle kernels status "$KAGGLE_USERNAME/$k" || true
+            rm -rf o && mkdir o && kaggle kernels output "$KAGGLE_USERNAME/$k" -p o >/dev/null 2>&1 || true
+            f=$(ls o/*.log 2>/dev/null | head -1); [ -n "$f" ] && python3 -c "import json,sys;[print(x.get('data','').rstrip()) for x in json.load(open(sys.argv[1]))]" "$f" 2>/dev/null | grep -v '^$' | grep -viE 'token|bearer' | tail -40
           done
   hf-space:
     if: inputs.only == 'hf-space'
