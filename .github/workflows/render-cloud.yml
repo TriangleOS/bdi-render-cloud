@@ -48,7 +48,14 @@ jobs:
           # Two notebooks in parallel (Kaggle runs several CPU sessions at once); the second is skipped if the limit is hit.
           # Plus one GPU notebook once a day (06:05 run or by hand) that draws its own scene pictures: ~4 h a day stays
           # inside Kaggle's 30 free GPU hours a week; when they run out Kaggle refuses the push and nothing is charged.
-          list='"" "-2"'; { [ "$(date -u +%H)" = "06" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; } && list='"" "-2" "-gpu"'
+          # Scheduled runs can start hours late, so the GPU notebook starts when the portal last saw it 18+ hours ago
+          # (or, if the portal cannot answer, on a morning run).
+          gpu_due=$(curl -fsS -m 20 -H "authorization: Bearer $TOKEN" https://firstreceive.com/empire/api/machine/production 2>/dev/null | python3 -c '
+          import json,sys,datetime as d
+          m={x["k"]:x["v"] for x in json.load(sys.stdin).get("machines",[])}.get("render_machine:kaggle-gpu")
+          print("yes" if not m or (d.datetime.now(d.timezone.utc)-d.datetime.fromisoformat(m.replace("Z","+00:00"))).total_seconds()>18*3600 else "no")' 2>/dev/null || { [ "$(date -u +%H)" -lt 12 ] && echo yes || echo no; })
+          echo "GPU notebook due: $gpu_due"
+          list='"" "-2"'; { [ "$gpu_due" = "yes" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; } && list='"" "-2" "-gpu"'
           eval "set -- $list"
           for n in "$@"; do
             gpu=false; g=0; mins=680; shape=""; [ "$n" = "-gpu" ] && { gpu=true; g=1; mins=230; shape=' "machine_shape": "NvidiaTeslaT4",'; }
@@ -67,12 +74,14 @@ jobs:
           KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME || 'triangleos' }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          TOKEN: ${{ secrets.BDI_MACHINE_TOKEN }}
         run: |
           [ -z "$KAGGLE_KEY" ] && unset KAGGLE_KEY
           pip install -q -U kaggle
+          echo "=== D1 reads today by route/cron"; curl -fsS -m 20 -H "authorization: Bearer $TOKEN" https://firstreceive.com/empire/api/machine/read-stats || true; echo
           for k in bdi-render bdi-render-2 bdi-render-gpu; do
-            echo "=== $k"; kaggle kernels status "$KAGGLE_USERNAME/$k" || true
-            rm -rf o && mkdir o && kaggle kernels output "$KAGGLE_USERNAME/$k" -p o >/dev/null 2>&1 || true
+            echo "=== $k"; timeout 30 kaggle kernels status "$KAGGLE_USERNAME/$k" || true
+            rm -rf o && mkdir o && timeout 60 kaggle kernels output "$KAGGLE_USERNAME/$k" -p o >/dev/null 2>&1 || true
             f=$(ls o/*.log 2>/dev/null | head -1); [ -n "$f" ] && python3 -c "import json,sys;[print(x.get('data','').rstrip()) for x in json.load(open(sys.argv[1]))]" "$f" 2>/dev/null | grep -v '^$' | grep -viE 'token|bearer' | tail -40
           done
   hf-space:
