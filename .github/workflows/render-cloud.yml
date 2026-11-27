@@ -49,11 +49,11 @@ jobs:
           # Plus one GPU notebook once a day (06:05 run or by hand) that draws its own scene pictures: ~4 h a day stays
           # inside Kaggle's 30 free GPU hours a week; when they run out Kaggle refuses the push and nothing is charged.
           # Scheduled runs can start hours late, so the GPU notebook starts when the portal last saw it 18+ hours ago
-          # (or, if the portal cannot answer, on a morning run).
+          # (or whenever the portal cannot answer: Kaggle's weekly GPU quota is the backstop).
           gpu_due=$(curl -fsS -m 20 -H "authorization: Bearer $TOKEN" https://firstreceive.com/empire/api/machine/production 2>/dev/null | python3 -c '
           import json,sys,datetime as d
           m={x["k"]:x["v"] for x in json.load(sys.stdin).get("machines",[])}.get("render_machine:kaggle-gpu")
-          print("yes" if not m or (d.datetime.now(d.timezone.utc)-d.datetime.fromisoformat(m.replace("Z","+00:00"))).total_seconds()>18*3600 else "no")' 2>/dev/null || { [ "$(date -u +%H)" -lt 12 ] && echo yes || echo no; })
+          print("yes" if not m or (d.datetime.now(d.timezone.utc)-d.datetime.fromisoformat(m.replace("Z","+00:00"))).total_seconds()>18*3600 else "no")' 2>/dev/null || echo yes)
           echo "GPU notebook due: $gpu_due"
           list='"" "-2"'; { [ "$gpu_due" = "yes" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; } && list='"" "-2" "-gpu"'
           eval "set -- $list"
